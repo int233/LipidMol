@@ -2,8 +2,7 @@ from collections import Counter, defaultdict
 import re
 from .lipid_class import lipid_class_dict
 from .common_molecular import *
-
-
+from .ion import *
 
 class FormulaParser:
 
@@ -12,16 +11,11 @@ class FormulaParser:
         self.mass = 0
 
     def split_lipid_string(self, s):
-        # # 检查是否存在以括号结尾后跟有标记的模式，如 "(d5)"
-        # match = re.match(r"^(.+?)\s+\((d\d+)\)$", input_string)
-        # if match:
-        #     # 如果找到匹配，分割为主要部分和标记
-        #     return [match.group(1), f"({match.group(2)})"]
-        # else:
-        #     # 如果没有找到特定模式，返回原字符串作为单个元素的列表
-        #     return [input_string]
-
-        # 匹配括号内的内容，包括嵌套的括号，同时保留不在括号内的部分
+        """
+        将最原始的脂质名称分割为多个部分，例如TG (O-50:1) [NL-16:0]分割为['TG (O-50:1)','[NL-16:0]']
+        :param s: 最原始的脂质名称，例如TG (O-50:1) [NL-16:0]
+        :return:
+        """
         parts = []
         stack = []
         last_index = 0
@@ -33,7 +27,7 @@ class FormulaParser:
                 if stack:
                     open_char, open_index = stack.pop()
                     if open_char == '(' and char == ')':
-                        if not stack:  # 当栈为空时，添加括号之间的内容
+                        if not stack:
                             parts.append(s[last_index:open_index])
                             parts.append(s[open_index:i + 1])
                             last_index = i + 1
@@ -42,13 +36,10 @@ class FormulaParser:
                             parts.append(s[last_index:open_index])
                             parts.append(s[open_index:i + 1])
                             last_index = i + 1
-                    # 根据需要可以继续处理其他类型的括号，例如大括号等
 
-        # 添加最后一个闭合括号后面的内容
         if last_index < len(s):
             parts.append(s[last_index:])
 
-        # 过滤空字符串和去除多余空格
         parts = [part.strip() for part in parts if part.strip()]
 
         i = 0
@@ -68,11 +59,9 @@ class FormulaParser:
 
         for arg in args:
             if isinstance(arg, dict):
-                # 如果参数是字典，直接将其元素和计数加到结果中
                 for key, value in arg.items():
                     result[key] += value
             elif isinstance(arg, list):
-                # 如果参数是列表，假设列表中包含的都是字典
                 for dictionary in arg:
                     for key, value in dictionary.items():
                         result[key] += value
@@ -80,42 +69,51 @@ class FormulaParser:
                 raise ValueError(
                     "Unsupported argument type. Each argument must be a dictionary or a list of dictionaries.")
 
-        # 返回一个普通字典格式的结果
         return dict(result)
 
     def delete_element_counts(self, main_dict, *args):
-        # 遍历传入的额外参数
+        """
+        从main_dict中减去args中的元素数目
+        :param main_dict:主字典，其中包含元素及其数量的键值对
+        :param args:可变数量的参数，每个参数可以是一个字典或包含多个字典的列表。每个字典都包含希望从 main_dict 中减去的元素数量
+        :return:更新后的 main_dict，已经减去了 args 中指定的元素数目
+        """
         for arg in args:
             if isinstance(arg, dict):
-                # 如果参数是字典，从主字典中减去其元素的计数
                 for key, value in arg.items():
                     main_dict[key] = main_dict.get(key, 0) - value
-                    # 如果减后的元素值小于等于0，则可以选择删除该键或保留为0
                     if main_dict[key] <= 0:
                         del main_dict[key]
             elif isinstance(arg, list):
-                # 如果参数是列表，假设列表中包含的都是字典
                 for dictionary in arg:
                     for key, value in dictionary.items():
                         main_dict[key] = main_dict.get(key, 0) - value
-                        # 同样的删除或保留逻辑
                         if main_dict[key] <= 0:
                             del main_dict[key]
             else:
-                raise ValueError(
-                    "Unsupported argument type. Each argument must be a dictionary or a list of dictionaries.")
+                raise ValueError("数据格式有误")
 
         return main_dict
 
     def remove_outer_brackets(self, s):
-        # Check for both English and Chinese brackets
+        """
+        去除字符串两端的括号
+        :param s: 脂质名称分割后的结果，例如(18:0/0:0/0:0)、(d5)
+        :return: 去除括号后的字符串
+        """
+
         if (s.startswith('(') and s.endswith(')')) or (s.startswith('（') and s.endswith('）')):
             return s[1:-1]
         return s
 
-    def detect_lipid_category(self, lipid_string, lipid_class):
-        # Use a regular expression to extract the lipid abbreviation more flexibly
-        # It extracts the first word or group of letters before any space or punctuation
+    def detect_lipid_category(self, lipid_string, lipid_class = lipid_class_dict):
+        """
+        检测脂质的类别，例如TG、DG、MG、PC、PE等
+        :param lipid_string: 脂质名称，根据名称首字母匹配脂质类别，例如TG (O-50:1) [NL-16:0]
+        :param lipid_class: 来源于LipidMAPS的脂质类别字典，（Category - Main Class）->（MainClass - SubClass）
+        :return: 返回具体的脂质类别，返回的内容为(MainClass, SubClass, Formula)
+        """
+
         match = re.match(r"(\w+)", lipid_string)
         if match:
             lipid_abbreviation = match.group(1)
@@ -161,6 +159,12 @@ class FormulaParser:
         return [rc1, rc2, rc3]
 
     def calculate_fatty_acid_chain(self, chain_list: str | list, lipid_sub_class=None) -> list:
+        """
+        计算脂肪酸链的碳、氢、氧原子数目，如果输入单个链，则返回单个链的结果，如果输入多个链，则返回多个链的结果。
+        :param chain_list: 脂肪酸链的简写形式，支持单个或多个链的输入，例如"16:0"或["16:0", "18:1"]
+        :param lipid_sub_class: 脂质子类别，例如TG、DG、MG等，用于校正多链合一的情况下总氧原子数目
+        :return: 脂肪酸链的碳、氢、氧原子数目
+        """
 
         if isinstance(chain_list, str):
             chain_list = [chain_list]
@@ -186,6 +190,12 @@ class FormulaParser:
         return output_chain_list
 
     def add_lipid_chains(self, chain1, chain2):
+        """
+        用于计算两个脂肪酸链的碳、双键之和
+        :param chain1: 脂肪酸链1，例如"16:0"
+        :param chain2: 脂肪酸链2，例如"18:1"
+        :return: 两个脂肪酸链的碳、双键之和，例如"34:1"
+        """
         # 解析第一个链的长度和不饱和度
         length1, unsaturation1 = map(int, chain1.split(':'))
         # 解析第二个链的长度和不饱和度
@@ -203,9 +213,9 @@ class FormulaParser:
     def split_lipid(self,formula_list: tuple | list):
 
         """
-
-        :param formula_list: [('GL', 'TG', 'formula')]
-        :return:
+        将整体的脂肪酸链分割为单个的脂肪酸链，以碳原子数:双键数目的形式返回
+        :param formula_list: [('GL', 'TG', '(16:1(9Z)/16:1(9Z)/17:1(9Z))')]
+        :return:["16:1","16:1","17:1"]
         """
 
         if isinstance(formula_list, tuple):
@@ -229,8 +239,13 @@ class FormulaParser:
 
         return res
 
-    ## 计算氘原子数目
+    ##
     def countDeuterium(self, formula_list: str | list):
+        """
+        计算初次分割之后，脂质中氘原子数目
+        :param formula_list: ["TG(20:5/22:6/20:5)","(d5)"]
+        :return: {'D':5}
+        """
         # Ensure input is a list
         if isinstance(formula_list, str):
             formula_list = [formula_list]
@@ -248,6 +263,11 @@ class FormulaParser:
         return {'D': sum(deuterium_counts)} if deuterium_counts else {}
 
     def countNL(self, formula_list: str | list):
+        """
+        查找并返回初次分割之后脂质中的中性丢失链
+        :param formula_list: ["TG (O-50:1)","[NL-16:0]"]
+        :return: ["16:0"]
+        """
         # Ensure input is a list
         if isinstance(formula_list, str):
             formula_list = [formula_list]
@@ -262,6 +282,24 @@ class FormulaParser:
         total_nl_chain = self.merge_element_counts(nl_chains)
 
         return total_nl_chain
+
+    def countIon(self, formula_list: str | list):
+        """
+        查找并返回初次分割之后脂质中的加和离子
+        :param formula_list:
+        :return:
+        """
+        if isinstance(formula_list, str):
+            formula_list = [formula_list]
+
+        matched_ions = [ion_list[ion] for ion in formula_list if ion in ion_list.keys()]
+
+        if len(matched_ions) == 1:
+            return matched_ions[0]
+        if len(matched_ions) == 0:
+            return []
+        else:
+            raise ValueError("不应该存在多个离子")
 
 
     def countAtoms(self, formula: str):
@@ -343,17 +381,52 @@ class FormulaParser:
         if re.match(gl_re, formula):
             self.atom_list = self.glParser(formula)
 
-    def glParser(self,formula):
+    def format_chemical_formula(self, atoms):
+        """
+        将原子计数字典转换为化学式字符串。如果字典中包含电荷（'e'键），还将添加电荷表示。
+
+        :param atoms: dict
+            包含元素符号和对应数量的字典。可包含键 'e'，表示电荷数（正数表示正电荷，负数表示负电荷）。
+
+        :return: str
+            格式化后的化学式，可能包含电荷表示。
+        """
+        formula = ""
+        charge = ""
+
+        for element, count in atoms.items():
+            if element != 'e':
+                formula += f"{element}{count}" if count > 1 else f"{element}"
+
+        if 'e' in atoms:
+            charge_magnitude = abs(atoms['e'])
+            charge_sign = '+' if atoms['e'] < 0 else '-'
+            if charge_magnitude == 1:
+                charge = f"{charge_sign}"
+            else:
+                charge = f"{charge_magnitude}{charge_sign}"
+
+        if charge:
+            return f"[{formula}]{charge}"
+        else:
+            return formula
+
+    def glParser(self, formula):
+
+        """
+        解析甘油脂分子式
+        :param formula: 甘油脂分子式，例如TG (O-50:1) [NL-16:0]
+        :return: 甘油分子的元素和原子数目，{'C': 53, 'H': 102, 'O': 5}
+        """
 
         parts = [self.remove_outer_brackets(part) for part in self.split_lipid_string(formula)]
 
-        print(f"parts: {parts}")
-
         deuterium = self.countDeuterium(parts)
+
+        ions = self.countIon(parts)
 
         nl_chain = self.countNL(parts)
 
-        print(f"nl_chain: {nl_chain}")
 
         lipid_formula = [self.detect_lipid_category(part, lipid_class_dict) for part in parts if self.detect_lipid_category(part, lipid_class_dict)[0]]
 
@@ -415,15 +488,22 @@ class FormulaParser:
         if methyl_num > 0:
             total_formula = self.merge_element_counts(total_formula, {'C': methyl_num, 'H': 2 * methyl_num})
 
-        total_mass = self.get_mass(total_formula)
+        # 加上离子
+        if len(ions) > 0:
+            print(f"检测到离子")
+            total_formula = self.merge_element_counts(total_formula, ions)
 
-        # print(f"Total mass: {total_mass}")
-        # print(f"total_fatty_chain: {total_fatty_chain}")
-        # print(f"Total formula: {total_formula}")
 
         return total_formula
 
-    def Parser(self, formula, get_mass = False):
+    def Parser(self, formula):
+
+        """
+        解析分子式
+
+        :param formula: 输入的任意分子式、或脂质简写形式
+        :return: 返回化学式、精确分子量和各元素原子数目
+        """
 
         from molmass import Formula
         from molmass import FormulaError
@@ -433,14 +513,11 @@ class FormulaParser:
         if category == "GL":
             print(f"Lipid belongs to category: {category} with abbreviation: {abbreviation}")
             self.atom_list = self.glParser(formula)
-            total_formula = ''
-            for element in self.atom_list.keys():
-                count = self.atom_list.get(element, 0)
-                total_formula += f"{element}{count}"
+            total_formula = self.format_chemical_formula(self.atom_list)
             try:
                 return total_formula, Formula(total_formula).monoisotopic_mass, self.atom_list
             except FormulaError:
-                print(f"Formula is not valid: {total_formula}")
+                print(f"化学式不合规: {total_formula}")
                 return formula, None, None
 
         else:
@@ -448,22 +525,19 @@ class FormulaParser:
                 print(f"Formula maybe inorganic")
                 return formula, self.countAtoms(formula), None
             except FormulaError:
-                print(f"Formula is not valid: {formula}")
+                print(f"化学式不合规: {formula}")
                 return formula, None, None
 
 
 
     def get_mass(self, atoms : dict = None):
-        mass = 0
+
         if atoms is None:
             if self.atom_list is None:
                 return None
             atoms = self.atom_list
 
-        formula = ''
-        for element in atoms.keys():
-            count = atoms.get(element, 0)
-            formula += f"{element}{count}"
+        formula = self.format_chemical_formula(atoms)
 
         from molmass import Formula
         return Formula(formula).monoisotopic_mass
