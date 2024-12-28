@@ -349,38 +349,6 @@ class FormulaParser:
             ans[name] = count[name]
         return ans
 
-    def countLipid(self, formula: str):
-        """
-        解析脂质分子式
-
-        使用简写的脂质分子式，例如：PC(16:0/18:1)识别脂质
-
-        支持的脂质类别：
-            - GL： 甘油脂
-                - MG
-                - DG
-                - TG
-            - PL： 磷脂
-                - PC
-                - PE
-                - PS
-                - PI
-                - PA
-            - SP： 鞘脂
-                - SM
-                - Cer
-                - HexCer
-            - ST： 固醇
-                - ChE 固醇脂
-
-        :param formula:
-
-        :return:
-        """
-        gl_re = r"^(MG|DG|TG)\b"
-        if re.match(gl_re, formula):
-            self.atom_list = self.glParser(formula)
-
     def format_chemical_formula(self, atoms):
         """
         将原子计数字典转换为化学式字符串。如果字典中包含电荷（'e'键），还将添加电荷表示。
@@ -411,7 +379,7 @@ class FormulaParser:
         else:
             return formula
 
-    def glParser(self, formula):
+    def lipidParser(self, formula):
 
         """
         解析甘油脂分子式
@@ -427,19 +395,21 @@ class FormulaParser:
 
         nl_chain = self.countNL(parts)
 
-
         lipid_formula = [self.detect_lipid_category(part, lipid_class_dict) for part in parts if self.detect_lipid_category(part, lipid_class_dict)[0]]
 
         lipid_formula = self.split_lipid(lipid_formula)
 
         lipid_class = lipid_formula[0][0]
         lipid_sub_class = lipid_formula[0][1]
+        # 统计脂肪酸链数目
         chain_num = len(lipid_formula[0][3])
+        chain_index = [index for index, element in enumerate(lipid_formula[0][3]) if element[0] != '0:0']
+        chain_null_index = [index for index, element in enumerate(lipid_formula[0][3]) if element[0] == '0:0']
+        print(f"Chains: {lipid_formula[0][3]}")
         methyl_num = 0
         total_chain = []
         plasmalogen_tag = None
-        for i in range(chain_num):
-            chain = lipid_formula[0][3][i]
+        for chain in [lipid_formula[0][3][i] for i in chain_index]:
             if chain[1] == 1:
                 plasmalogen_tag = "Alkyl"
             elif chain[1] == 2:
@@ -448,10 +418,23 @@ class FormulaParser:
             total_chain.append(chain[0])
 
         total_formula = {}
-
         # Bone
         if lipid_class == "GL":
             total_formula = self.merge_element_counts(total_formula, glycerol_atoms)
+        elif lipid_class == "PL":
+            if lipid_sub_class in ["PC", "LPC"]:
+                total_formula = self.merge_element_counts(total_formula, glycerol_atoms, pc_atoms)
+                total_formula = self.delete_element_counts(total_formula, water_atoms)
+            if lipid_sub_class in ["PE", "LPE"]:
+                total_formula = self.merge_element_counts(total_formula, glycerol_atoms, pe_atoms)
+                total_formula = self.delete_element_counts(total_formula, water_atoms)
+            if lipid_sub_class in ["PS", "LPS"]:
+                total_formula = self.merge_element_counts(total_formula, glycerol_atoms, ps_atoms)
+                total_formula = self.delete_element_counts(total_formula, water_atoms)
+            if lipid_sub_class in ["PI", "LPI"]:
+                total_formula = self.merge_element_counts(total_formula, glycerol_atoms, pi_atoms)
+                total_formula = self.delete_element_counts(total_formula, water_atoms)
+
 
         # Fatty chain
         total_fatty_chain = self.calculate_fatty_acid_chain(total_chain, lipid_sub_class)
@@ -463,12 +446,25 @@ class FormulaParser:
         total_formula = self.merge_element_counts(total_formula, total_fatty_chain)
 
         # 酯化反应，酯键减少氢氧原子数目
-        if lipid_sub_class == "TG":
-            total_formula = self.delete_element_counts(total_formula, [water_atoms] * 3)
-        elif lipid_sub_class == "DG":
-            total_formula = self.delete_element_counts(total_formula, [water_atoms] * 2)
-        elif lipid_sub_class == "MG":
-            total_formula = self.delete_element_counts(total_formula, [water_atoms] * 1)
+        if lipid_class == "GL":
+            if lipid_sub_class == "TG":
+                total_formula = self.delete_element_counts(total_formula, [water_atoms] * 3)
+            elif lipid_sub_class == "DG":
+                total_formula = self.delete_element_counts(total_formula, [water_atoms] * 2)
+            elif lipid_sub_class == "MG":
+                total_formula = self.delete_element_counts(total_formula, [water_atoms] * 1)
+        elif lipid_class == "PL":
+            if lipid_sub_class in ["PC", "PE", "PS", "PI"]:
+                # 双脂肪酸链
+                if len(chain_index) == 2:
+                    total_formula = self.delete_element_counts(total_formula, [water_atoms] * 2)
+                # 溶血磷脂，单脂肪酸链
+                elif len(chain_index) == 1 and len(chain_null_index) == 1:
+                    total_formula = self.delete_element_counts(total_formula, [water_atoms] * 1)
+            # 溶血磷脂，单脂肪酸链
+            elif lipid_sub_class in ["LPC", "LPE", "LPS", "LPI"]:
+                total_formula = self.delete_element_counts(total_formula, [water_atoms] * 1)
+
 
         # 加上氘原子数目
         if deuterium:
@@ -510,9 +506,9 @@ class FormulaParser:
 
         category, abbreviation, _ = self.detect_lipid_category(formula, lipid_class_dict)
 
-        if category == "GL":
+        if category in ["FA", "GL", "PL"]:
             print(f"Lipid belongs to category: {category} with abbreviation: {abbreviation}")
-            self.atom_list = self.glParser(formula)
+            self.atom_list = self.lipidParser(formula)
             total_formula = self.format_chemical_formula(self.atom_list)
             try:
                 return total_formula, Formula(total_formula).monoisotopic_mass, self.atom_list
