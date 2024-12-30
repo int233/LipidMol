@@ -4,7 +4,7 @@ setup(
     name="LipidMol",
     version="0.1.0",
     description="Calculate the exact mass of lipids based on their common names",
-    long_description=open("README.md").read(),
+    long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
     author="int0030",
     author_email="int0030@163.com",
