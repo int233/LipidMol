@@ -62,5 +62,40 @@ class TestGL(unittest.TestCase):
         self.assertEqual(result3[2], {'C': 52, 'H': 95, 'O': 6, 'e': -1})
 
 
+class TestSP(unittest.TestCase):
+    """测试鞘脂的解析"""
+    def setUp(self):
+        self.fp = FormulaParser()
+
+    def test_sm_simple(self):
+        """测试SM的解析"""
+        result1 = self.fp.Parser("SM(d18:1/12:0)")
+        self.assertEqual(result1[2], {'C': 35, 'H': 71, 'O': 6, 'N': 2, 'P': 1})
+
+        result2 = self.fp.Parser("SM(d30:1)")
+        self.assertEqual(result2[2], {'C': 35, 'H': 71, 'O': 6, 'N': 2, 'P': 1})
+
+        result3 = self.fp.Parser("SM(d18:0/24:1(15Z))")
+        self.assertEqual(result3[2], {'C': 47, 'H': 95, 'O': 6, 'N': 2, 'P': 1})
+
+        result4 = self.fp.Parser("SM(d18:1/16:0(2OH))")
+        self.assertEqual(result4[2], {'C': 39, 'H': 79, 'O': 7, 'N': 2, 'P': 1})
+
+    def test_cer_simple(self):
+        """测试Cer的解析"""
+        result1 = self.fp.Parser("Cer(d18:2/14:0)")
+        self.assertEqual(result1[2], {'C': 32, 'H': 61, 'O': 3, 'N': 1})
+
+        result2 = self.fp.Parser("Cer(d16:1(4E)/18:1(9Z)(2OH))")
+        self.assertEqual(result2[2], {'C': 34, 'H': 65, 'O': 4, 'N': 1})
+
+        result3 = self.fp.Parser("Cer(t18:1(6OH)/27:0)")
+        self.assertEqual(result3[2], {'C': 45, 'H': 89, 'O': 4, 'N': 1})
+
+        result4 = self.fp.Parser("meCer(d19:1/24:0)")
+        self.assertEqual(result4[2], {'C': 43, 'H': 85, 'O': 3, 'N': 1})
+
+
+
 if __name__ == "__main__":
     unittest.main()

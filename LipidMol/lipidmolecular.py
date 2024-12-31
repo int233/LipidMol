@@ -140,6 +140,7 @@ class FormulaParser:
         :return: 长度:饱和度、缩醛标记（O:1，P：2）、额外甲基数量（Me:1）
         :rtype: list
         """
+        logger.debug(f"{self.formula} - Checking chain: {chain}")
 
         # 检查链的长度和饱和度
         rc1 = re.search(r'(\d+):(\d+)', chain).group()
@@ -158,7 +159,17 @@ class FormulaParser:
         # 确定甲基化标记"Me"，返回甲基数量
         rc3 = len(re.findall(r'Me', chain))
 
-        return [rc1, rc2, rc3]
+        # 确定鞘脂骨架的羟基标记
+        rc4 = re.fullmatch(r'([mdt])(\d+):(\d+).*', chain)
+        if rc4:
+            rc4 = rc4.group(1)
+        else:
+            rc4 = None
+
+        # 确定脂肪酸链的羟基标记，返回羟基数量
+        rc5 = len(re.findall(r'OH', chain))
+
+        return [rc1, rc2, rc3, rc4, rc5]
 
     def calculate_fatty_acid_chain(self, chain_list: str | list, actual_chain_num: int = None) -> list:
         """
@@ -217,6 +228,30 @@ class FormulaParser:
 
         return result
 
+    def delete_lipid_chains(self, chain1, chain2):
+        """
+        用于计算两个脂肪酸链的碳、双键之差
+        :param chain1: 脂肪酸链1，例如"34:1"
+        :param chain2: 脂肪酸链2，例如"18:1"
+        :return: 两个脂肪酸链的碳、双键之和，例如"16:0"
+        """
+        # 解析第一个链的长度和不饱和度
+        length1, unsaturation1 = map(int, chain1.split(':'))
+        # 解析第二个链的长度和不饱和度
+        length2, unsaturation2 = map(int, chain2.split(':'))
+
+        # 将相应的长度和不饱和度进行相加
+        total_length = length1 - length2
+        total_unsaturation = unsaturation1 - unsaturation2
+
+        if total_length < 0 or total_unsaturation < 0:
+            logger.warning(f"{chain1} - {chain2} = {total_length}:{total_unsaturation}")
+
+        # 构造结果字符串
+        result = f"{total_length}:{total_unsaturation}"
+
+        return result
+
     def split_lipid(self,formula_list: tuple | list):
 
         """
@@ -253,16 +288,13 @@ class FormulaParser:
         :param formula_list: ["TG(20:5/22:6/20:5)","(d5)"]
         :return: {'D':5}
         """
-        # Ensure input is a list
         if isinstance(formula_list, str):
             formula_list = [formula_list]
 
-        # List to hold all matched numbers
         deuterium_counts = []
 
-        # Search for 'd' followed by digits in each formula
         for formula in formula_list:
-            matches = re.finditer(r'\bd(\d+)\b', formula)
+            matches = re.finditer(r'\bd(\d+)\b(?![:/])', formula)
             for match in matches:
                 number = match.group(1)
                 deuterium_counts.append(int(number))  # Convert string to int and add to list
@@ -396,6 +428,8 @@ class FormulaParser:
 
         parts = [self.remove_outer_brackets(part) for part in self.split_lipid_string(formula)]
 
+        logger.debug(f"{self.formula} - first split: {parts}")
+
         deuterium = self.countDeuterium(parts)
 
         ions = self.countIon(parts)
@@ -416,16 +450,26 @@ class FormulaParser:
         methyl_num = 0
         total_chain = []
         plasmalogen_tag = None
+        sm_hydroxyl_tag = None
+        chain_hydroxyl_num = 0
         for chain in [lipid_formula[0][3][i] for i in chain_index]:
             if chain[1] == 1:
                 plasmalogen_tag = "Alkyl"
             elif chain[1] == 2:
                 plasmalogen_tag = "Alkenyl"
+
+            if chain[3] in ["m", "d", "t"]:
+                sm_hydroxyl_tag = chain[3]
             methyl_num += chain[2]
+
+            # 羟基数目，若该链为鞘脂骨架，则不计入羟基数目
+            if chain[3] is None:
+                chain_hydroxyl_num += chain[4]
             total_chain.append(chain[0])
 
         total_formula = {}
         actual_chain_num = None
+
         # Bone and nums of Fatty acid chains
         if lipid_class == "GL":
             total_formula = self.merge_element_counts(total_formula, glycerol_atoms)
@@ -458,6 +502,30 @@ class FormulaParser:
             elif lipid_sub_class in ["LPC", "LPE", "LPS", "LPI"]:
                 actual_chain_num = 1
 
+        elif lipid_class == "SP":
+            actual_chain_num = 1
+            if sm_hydroxyl_tag is not None:
+                if len(chain_index) == 2:
+                    sph_bone = sph.from_chain(f"{sm_hydroxyl_tag}{total_chain[0]}")
+                    total_chain = [total_chain[1]]
+                elif len(chain_index) == 1:
+                    # 无法区分骨架，假设骨架为16:0
+                    sph_bone = sph.from_chain(f"{sm_hydroxyl_tag}16:0")
+                    total_chain[0] = self.delete_lipid_chains(total_chain[0], "16:0")
+                else:
+                    logger.error(f"{self.formula} - 无法识别鞘脂骨架")
+                    return None
+            else:
+                logger.error(f"{self.formula} - 无法识别鞘脂骨架")
+                return None
+
+            if lipid_sub_class == "SM":
+                total_formula = self.merge_element_counts(total_formula, sph_bone, pc_atoms)
+                total_formula = self.delete_element_counts(total_formula, water_atoms)
+
+            if lipid_sub_class in ["Cer", "meCer"]:
+                total_formula = self.merge_element_counts(total_formula, sph_bone)
+
         # Fatty acid chains
         total_fatty_chain = self.calculate_fatty_acid_chain(total_chain, actual_chain_num)
         # 如果只有一个链，直接计算，否则计算后合并
@@ -484,7 +552,8 @@ class FormulaParser:
             # 溶血磷脂，单脂肪酸链
             elif lipid_sub_class in ["LPC", "LPE", "LPS", "LPI"]:
                 total_formula = self.delete_element_counts(total_formula, [water_atoms] * 1)
-
+        elif lipid_class in ["SP"]:
+            total_formula = self.delete_element_counts(total_formula, [water_atoms] * 1)
 
         # 加上氘原子数目
         if deuterium:
@@ -502,6 +571,10 @@ class FormulaParser:
         # 加上甲基化标记
         if methyl_num > 0:
             total_formula = self.merge_element_counts(total_formula, {'C': methyl_num, 'H': 2 * methyl_num})
+
+        # 加上羟基标记
+        if chain_hydroxyl_num > 0:
+            total_formula = self.merge_element_counts(total_formula, {'O': chain_hydroxyl_num})
 
         # 加上离子
         if len(ions) > 0:
@@ -530,7 +603,7 @@ class FormulaParser:
 
         category, abbreviation, _ = self.detect_lipid_category(formula, lipid_class_dict)
 
-        if category in ["FA", "GL", "PL"]:
+        if category in ["FA", "GL", "PL", "SP"]:
             logger.info(f"Lipid belongs to category: {category} with abbreviation: {abbreviation}")
             self.atom_list = self.lipidParser(formula)
             total_formula = self.format_chemical_formula(self.atom_list)
@@ -542,7 +615,7 @@ class FormulaParser:
 
         else:
             try:
-                logger.info(f"Formula maybe inorganic")
+                logger.info(f"{formula} - 可能为无机物")
                 return formula, self.countAtoms(formula), None
             except FormulaError:
                 logger.error(f"化学式不合规: {formula}")
