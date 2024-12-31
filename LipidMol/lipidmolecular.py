@@ -1,5 +1,6 @@
 from collections import Counter, defaultdict
 import re
+from loguru import logger
 from .lipid_class import lipid_class_dict
 from .common_molecular import *
 from .ion import *
@@ -9,6 +10,7 @@ class FormulaParser:
     def __init__(self):
         self.atom_list = None
         self.mass = 0
+        self.formula = None
 
     def split_lipid_string(self, s):
         """
@@ -158,7 +160,7 @@ class FormulaParser:
 
         return [rc1, rc2, rc3]
 
-    def calculate_fatty_acid_chain(self, chain_list: str | list, lipid_sub_class=None) -> list:
+    def calculate_fatty_acid_chain(self, chain_list: str | list, actual_chain_num: int = None) -> list:
         """
         计算脂肪酸链的碳、氢、氧原子数目，如果输入单个链，则返回单个链的结果，如果输入多个链，则返回多个链的结果。
         :param chain_list: 脂肪酸链的简写形式，支持单个或多个链的输入，例如"16:0"或["16:0", "18:1"]
@@ -181,11 +183,16 @@ class FormulaParser:
 
             output_chain_list.append({'C': carbon_atoms, 'H': hydrogen_atoms, 'O':2 })
 
+        # 根据真实的链数目，校正氧原子数目
+        if actual_chain_num is not None and len(chain_list) == 1:
+            output_chain_list[0]['O'] += 2 * (actual_chain_num - len(chain_list))
+
+
         # 如果是TG或DG，需要补充氧原子数目
-        if lipid_sub_class == "TG" and len(chain_list) == 1:
-            output_chain_list[0]['O'] += 2 * (3 - 1)
-        elif lipid_sub_class == "DG" and len(chain_list) == 1:
-            output_chain_list[0]['O'] += 2 * (2 - 1)
+        # if lipid_sub_class == "TG" and len(chain_list) == 1:
+        #     output_chain_list[0]['O'] += 2 * (3 - 1)
+        # elif lipid_sub_class == "DG" and len(chain_list) == 1:
+        #     output_chain_list[0]['O'] += 2 * (2 - 1)
 
         return output_chain_list
 
@@ -226,16 +233,16 @@ class FormulaParser:
         for formula in formula_list:
             bone = formula[1]
             formula_str = formula[2]
-            # print(f"formula_str: {formula_str}")
+            logger.debug(f"{self.formula} - formula_str: {formula_str}")
 
             if formula_str.startswith(bone):
                 chains = self.remove_outer_brackets(formula_str[len(bone):])
-                # print(f"chains: {chains}")
+                logger.debug(f"{self.formula} - Total chains list: {chains}")
                 chain_list = re.split(r'[/_]', chains)
                 chain_list = [self.check_chain(chain) for chain in chain_list]
                 res.append((formula[0], formula[1], formula[2], chain_list))
             else:
-                print(f"ERROR: {formula_str} is not a valid lipid formula")
+                logger.error(f"{self.formula} - ERROR: {formula_str} is not a valid lipid formula")
 
         return res
 
@@ -339,7 +346,7 @@ class FormulaParser:
 
             else:
                 # 跳过非元素、非括号、非数字字符
-                print("Invalid character encountered in the formula")
+                logger.error("Invalid character encountered in the formula")
                 return None
 
         # 排序并输出
@@ -405,7 +412,7 @@ class FormulaParser:
         chain_num = len(lipid_formula[0][3])
         chain_index = [index for index, element in enumerate(lipid_formula[0][3]) if element[0] != '0:0']
         chain_null_index = [index for index, element in enumerate(lipid_formula[0][3]) if element[0] == '0:0']
-        print(f"Chains: {lipid_formula[0][3]}")
+        logger.debug(f"{self.formula} - Splitted chains: {lipid_formula[0][3]}, chain_index: {chain_index}, chain_null_index: {chain_null_index}")
         methyl_num = 0
         total_chain = []
         plasmalogen_tag = None
@@ -418,9 +425,17 @@ class FormulaParser:
             total_chain.append(chain[0])
 
         total_formula = {}
-        # Bone
+        actual_chain_num = None
+        # Bone and nums of Fatty acid chains
         if lipid_class == "GL":
             total_formula = self.merge_element_counts(total_formula, glycerol_atoms)
+            if lipid_sub_class == "TG":
+                actual_chain_num = 3
+            elif lipid_sub_class == "DG":
+                actual_chain_num = 2
+            elif lipid_sub_class == "MG":
+                actual_chain_num = 1
+
         elif lipid_class == "PL":
             if lipid_sub_class in ["PC", "LPC"]:
                 total_formula = self.merge_element_counts(total_formula, glycerol_atoms, pc_atoms)
@@ -435,28 +450,33 @@ class FormulaParser:
                 total_formula = self.merge_element_counts(total_formula, glycerol_atoms, pi_atoms)
                 total_formula = self.delete_element_counts(total_formula, water_atoms)
 
+            if lipid_sub_class in ["PC", "PE", "PS", "PI"]:
+                if len(chain_index) == 1 and len(chain_null_index) == 1:
+                    actual_chain_num = 1
+                else:
+                    actual_chain_num = 2
+            elif lipid_sub_class in ["LPC", "LPE", "LPS", "LPI"]:
+                actual_chain_num = 1
 
-        # Fatty chain
-        total_fatty_chain = self.calculate_fatty_acid_chain(total_chain, lipid_sub_class)
+        # Fatty acid chains
+        total_fatty_chain = self.calculate_fatty_acid_chain(total_chain, actual_chain_num)
+        # 如果只有一个链，直接计算，否则计算后合并
         if len(total_fatty_chain) > 1:
             total_fatty_chain = self.merge_element_counts(total_fatty_chain)
         else:
             total_fatty_chain = total_fatty_chain[0]
 
         total_formula = self.merge_element_counts(total_formula, total_fatty_chain)
+        logger.debug(f"{self.formula} - total_fatty_chain: {total_fatty_chain}")
 
         # 酯化反应，酯键减少氢氧原子数目
         if lipid_class == "GL":
-            if lipid_sub_class == "TG":
-                total_formula = self.delete_element_counts(total_formula, [water_atoms] * 3)
-            elif lipid_sub_class == "DG":
-                total_formula = self.delete_element_counts(total_formula, [water_atoms] * 2)
-            elif lipid_sub_class == "MG":
-                total_formula = self.delete_element_counts(total_formula, [water_atoms] * 1)
+                logger.debug(f"{self.formula} - {lipid_class} - {lipid_sub_class}, water * {actual_chain_num}")
+                total_formula = self.delete_element_counts(total_formula, [water_atoms] * actual_chain_num)
         elif lipid_class == "PL":
             if lipid_sub_class in ["PC", "PE", "PS", "PI"]:
                 # 双脂肪酸链
-                if len(chain_index) == 2:
+                if len(chain_index) == 2 or (len(chain_index) == 1 and len(chain_null_index) == 0):
                     total_formula = self.delete_element_counts(total_formula, [water_atoms] * 2)
                 # 溶血磷脂，单脂肪酸链
                 elif len(chain_index) == 1 and len(chain_null_index) == 1:
@@ -469,9 +489,8 @@ class FormulaParser:
         # 加上氘原子数目
         if deuterium:
             total_formula = self.merge_element_counts(total_formula, deuterium)
-            # print(['H'] * deuterium['D'])
             total_formula = self.delete_element_counts(total_formula, {'H': deuterium['D']})
-            print(f"检测到氘原子数目：{deuterium['D']}")
+            logger.info(f"{self.formula} - 检测到氘原子数目：{deuterium['D']}")
 
         # 缩醛磷脂标记
         if plasmalogen_tag == "Alkyl":
@@ -486,7 +505,7 @@ class FormulaParser:
 
         # 加上离子
         if len(ions) > 0:
-            print(f"检测到离子")
+            logger.info(f"{self.formula} - 检测到离子")
             total_formula = self.merge_element_counts(total_formula, ions)
 
 
@@ -504,24 +523,29 @@ class FormulaParser:
         from molmass import Formula
         from molmass import FormulaError
 
+        if formula == "" or formula is None:
+            return None
+
+        self.formula = formula
+
         category, abbreviation, _ = self.detect_lipid_category(formula, lipid_class_dict)
 
         if category in ["FA", "GL", "PL"]:
-            print(f"Lipid belongs to category: {category} with abbreviation: {abbreviation}")
+            logger.info(f"Lipid belongs to category: {category} with abbreviation: {abbreviation}")
             self.atom_list = self.lipidParser(formula)
             total_formula = self.format_chemical_formula(self.atom_list)
             try:
                 return total_formula, Formula(total_formula).monoisotopic_mass, self.atom_list
             except FormulaError:
-                print(f"化学式不合规: {total_formula}")
+                logger.error(f"化学式不合规: {total_formula}")
                 return formula, None, None
 
         else:
             try:
-                print(f"Formula maybe inorganic")
+                logger.info(f"Formula maybe inorganic")
                 return formula, self.countAtoms(formula), None
             except FormulaError:
-                print(f"化学式不合规: {formula}")
+                logger.error(f"化学式不合规: {formula}")
                 return formula, None, None
 
 
